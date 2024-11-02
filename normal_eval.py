@@ -8,6 +8,8 @@ from PIL import Image
 from tqdm import tqdm
 
 
+# to be created: normal.png, albedo.png
+
 def get_mae(gt_normal_stack: np.ndarray, render_normal_stack: np.ndarray) -> float:
     # compute mean angular error
     MAE = np.mean(
@@ -26,17 +28,20 @@ if __name__ == "__main__":
 
     output_dir = args.output_dir
 
-    test_dirs = glob.glob(os.path.join(args.gt_dir, "test_*"))
+    # normal GT를 어떻게 얻을지  -> 1-13 각 dir 마다 normal GT 필요?
+    test_dirs = glob.glob(os.path.join(args.gt_dir, "test_*")) # ?
     test_dirs.sort()
 
     normal_gt_stack = []
     normal_gs_stack = []
     normal_from_depth_stack = []
+    
+    # import pdb;pdb.set_trace()
 
     normal_bg = np.array([0.0, 0.0, 1.0])
     for test_dir in tqdm(test_dirs):
         test_id = int(test_dir.split("_")[-1])
-        normal_gt_path = os.path.join(test_dir, "normal.png")
+        normal_gt_path = os.path.join(test_dir, "normal.png") # ?
         normal_gt_img = Image.open(normal_gt_path)
         normal_gt = np.array(normal_gt_img)[..., :3] / 255  # [H, W, 3] in range [0, 1]
         normal_gt = (normal_gt - 0.5) * 2.0  # [H, W, 3] in range (-1, 1)

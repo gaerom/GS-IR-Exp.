@@ -106,6 +106,10 @@ def render_set(
         gt_image = (gt_image * alpha_mask + background[:, None, None] * (1.0 - alpha_mask)).clamp(0.0, 1.0)
         torchvision.utils.save_image(gt_image, os.path.join(gts_path, f"{idx:05d}_gt.png"))
         
+        # # rendered image
+        # render_rgb = rendering_result["render"].clamp(0.0, 1.0)
+        # torchvision.utils.save_image(render_rgb, os.path.join(render_path, f"{idx:05d}_render.png"))
+        
         
         # depth
         depth_map = rendering_result["depth_map"]

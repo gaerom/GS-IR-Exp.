@@ -1,8 +1,6 @@
 
-### In progress
+## In progress
 - An experiment to encode geometry, material information for NVAS
-
-
 
 
 
