@@ -1,22 +1,11 @@
-#
-# Copyright (C) 2023, Inria
-# GRAPHDECO research group, https://team.inria.fr/graphdeco
-# All rights reserved.
-#
-# This software is free for non-commercial, research and evaluation use
-# under the terms of the LICENSE.md file.
-#
-# For inquiries contact  george.drettakis@inria.fr
-#
-
 import os
-from typing import Dict, List, Optional, Tuple
-
+import json
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from plyfile import PlyData, PlyElement
+from typing import Dict, List, Optional, Tuple
 from simple_knn._C import distCUDA2
 
 from arguments import GroupParams
@@ -198,6 +187,15 @@ class GaussianModel:
     def get_metallic(self) -> torch.Tensor:
         return self.material_activation(self._metallic)
 
+    def get_exposure(self) -> torch.Tensor:
+        return self._exposure
+
+    def get_exposure_from_name(self, image_name):
+        if self.pretrained_exposures is None:
+            return self._exposure[self.exposure_mapping[image_name]]
+        else:
+            return self.pretrained_exposures[image_name]
+
     def get_covariance(self, scaling_modifier: float = 1.0) -> torch.Tensor:
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
@@ -205,7 +203,7 @@ class GaussianModel:
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
-    def create_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float) -> None:
+    def create_from_pcd(self, pcd: BasicPointCloud, cam_infos: Optional[List] = None, spatial_lr_scale: float = 1.0) -> None:
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
@@ -228,7 +226,6 @@ class GaussianModel:
             0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda")
         )
 
-        # normal = torch.ones((fused_point_cloud.shape[0], 3), dtype=torch.float, device="cuda")
         normal = torch.zeros((fused_point_cloud.shape[0], 3), dtype=torch.float, device="cuda")
         normal[..., 2] = 1.0
         albedo = torch.ones((fused_point_cloud.shape[0], 3), dtype=torch.float, device="cuda")
@@ -251,6 +248,11 @@ class GaussianModel:
         self._metallic = nn.Parameter(metallic.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
+        if cam_infos:
+            self.exposure_mapping = {cam_info.image_name: idx for idx, cam_info in enumerate(cam_infos)}
+            self.pretrained_exposures = None
+            exposure = torch.eye(3, 4, device="cuda")[None].repeat(len(cam_infos), 1, 1)
+            self._exposure = nn.Parameter(exposure.requires_grad_(True))
     def training_setup(self, training_args: GroupParams) -> None:
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -278,6 +280,10 @@ class GaussianModel:
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        
+        if self.pretrained_exposures is None and hasattr(self, '_exposure') and self._exposure.numel() > 0:
+            self.exposure_optimizer = torch.optim.Adam([self._exposure])
+
         self.xyz_scheduler_args = get_expon_lr_func(
             lr_init=training_args.position_lr_init * self.spatial_lr_scale,
             lr_final=training_args.position_lr_final * self.spatial_lr_scale,
@@ -286,7 +292,10 @@ class GaussianModel:
         )
 
     def update_learning_rate(self, iteration: int) -> float:
-        """Learning rate scheduling per step"""
+        if self.pretrained_exposures is None and self.exposure_optimizer is not None:
+            for param_group in self.exposure_optimizer.param_groups:
+                param_group["lr"] = self.exposure_scheduler_args(iteration)
+
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
                 lr = self.xyz_scheduler_args(iteration)
