@@ -16,6 +16,8 @@ import torch
 import trimesh
 from scipy.spatial.transform import Rotation as R, Slerp
 from scipy.interpolate import interp1d
+from PIL import Image
+import cv2
 from tqdm import tqdm
 
 from arguments import GroupParams
@@ -26,21 +28,49 @@ from utils.graphics_utils import fov2focal
 
 WARNED = False
 
-
-def loadCam(args: GroupParams, id: int, cam_info: CameraInfo, resolution_scale: float) -> Camera:
-    orig_w, orig_h = cam_info.image.size
+def loadCam(
+    args: GroupParams,
+    id: int,
+    cam_info: CameraInfo,
+    resolution_scale: float,
+    is_nerf_synthetic: bool = False,
+    is_test_dataset: bool = False
+) -> Camera:
+    """Loads a camera with optional depth mapping based on dataset type."""
+    
+    image = Image.open(cam_info.image_path)
+    
+    if cam_info.depth_path != "":
+        try:
+            if is_nerf_synthetic:
+                invdepthmap = cv2.imread(cam_info.depth_path, -1).astype(np.float32) / 512
+            else:
+                invdepthmap = cv2.imread(cam_info.depth_path, -1).astype(np.float32) / float(2**16)
+        except FileNotFoundError:
+            print(f"Error: The depth file at path '{cam_info.depth_path}' was not found.")
+            raise
+        except IOError:
+            print(f"Error: Unable to open the image file '{cam_info.depth_path}'. It may be corrupted or an unsupported format.")
+            raise
+        except Exception as e:
+            print(f"An unexpected error occurred when trying to read depth at {cam_info.depth_path}: {e}")
+            raise
+    else:
+        invdepthmap = None
+    
+    orig_w, orig_h = image.size
 
     if args.resolution in [1, 2, 4, 8]:
         resolution = round(orig_w / (resolution_scale * args.resolution)), round(
             orig_h / (resolution_scale * args.resolution)
         )
-    else:  # should be a type that converts to float
+    else:
         if args.resolution == -1:
             if orig_w > 1600:
                 global WARNED
                 if not WARNED:
                     print(
-                        "[ INFO ] Encountered quite large input images (>1.6K pixels width), rescaling to 1.6K.\n "
+                        "[ INFO ] Encountered quite large input images (>1.6K pixels width), rescaling to 1.6K.\n"
                         "If this is not desired, please explicitly specify '--resolution/-r' as 1"
                     )
                     WARNED = True
@@ -53,7 +83,7 @@ def loadCam(args: GroupParams, id: int, cam_info: CameraInfo, resolution_scale: 
         scale = float(global_down) * float(resolution_scale)
         resolution = (int(orig_w / scale), int(orig_h / scale))
 
-    resized_image_rgb = PILtoTorch(cam_info.image, resolution)
+    resized_image_rgb = PILtoTorch(image, resolution)
 
     gt_image = resized_image_rgb[:3, ...]
     loaded_mask = None
@@ -69,19 +99,27 @@ def loadCam(args: GroupParams, id: int, cam_info: CameraInfo, resolution_scale: 
         FoVy=cam_info.FovY,
         image=gt_image,
         gt_alpha_mask=loaded_mask,
+        invdepthmap=invdepthmap,
         image_name=cam_info.image_name,
         uid=id,
         data_device=args.data_device,
+        train_test_exp=args.train_test_exp,
+        is_test_dataset=is_test_dataset,
+        is_test_view=cam_info.is_test
     )
 
 
 def cameraList_from_camInfos(
-    cam_infos: List[CameraInfo], resolution_scale: float, args: GroupParams
+    cam_infos: List[CameraInfo],
+    resolution_scale: float,
+    args: GroupParams,
+    is_nerf_synthetic: bool = False,
+    is_test_dataset: bool = False
 ) -> List[Camera]:
     camera_list = []
 
     for id, c in enumerate(tqdm(cam_infos)):
-        camera_list.append(loadCam(args, id, c, resolution_scale))
+        camera_list.append(loadCam(args, id, c, resolution_scale, is_nerf_synthetic, is_test_dataset))
 
     return camera_list
 
@@ -119,106 +157,62 @@ def get_camera_mesh(
     up_color: Sequence[float] = [1.0, 0.0, 0.0],
     right_color: Sequence[float] = [0.0, 1.0, 0.0],
 ) -> trimesh.Trimesh:
-    """get the mesh of the given camera pose
-
-    Args:
-        extrinsic (Union[torch.Tensor, np.ndarray]): extinsics of camera for visualization. The shape should be [3/4, 4]
-        intrinsic (Optional[Union[torch.Tensor, np.ndarray]], optional): intrinsic of camera for visualization.
-            the shape should be [3, 3]. Defaults to None.
-        is_c2w (bool, optional): whether the input extrnsic is the matrix that transform camera coordinate to
-            world coordinate. Defaults to False.
-        HW (Tuple[int], optional): image resolution. If not specified, given (cy * 2, cx * 2). Defaults to None.
-        camera_size (float, optional): control the scale of the camera mesh. Defaults to 1.0.
-        up_color (Sequence[float], optional): the color to shade up indication faces. Defaults to [1, 0, 0].
-        right_color (Sequence[float], optional): the color to shade right indication faces. Defaults to [0, 1, 0].
-
-    Returns:
-        trimesh.Trimesh: camera mesh
-    """
-
-    """format the extrinsic and intrinsic"""
-    # fmt: off
+    """Get the mesh of the given camera pose."""
+    
     default_intrinsic = np.array([
-        [1000.0,    0.0, 500.0],
-        [   0.0, 1000.0, 500.0],
-        [   0.0,    0.0,   1.0]
+        [1000.0, 0.0, 500.0],
+        [0.0, 1000.0, 500.0],
+        [0.0, 0.0, 1.0]
     ]).astype(np.float32)
-    # fmt: on
+    
     extrinsic = np.asarray(extrinsic).astype(np.float32)
     intrinsic = (
         np.asarray(intrinsic).astype(np.float32) if intrinsic is not None else default_intrinsic
     )
-    # dimension assert
+
     assert (
         extrinsic.ndim == 2 and extrinsic.shape[0] in [3, 4] and extrinsic.shape[1] == 4
     ), f"extrinsic should be of shape [3/4, 4], but got {extrinsic.shape}"
+    
     if extrinsic.shape[0] == 3:
         extrinsic = np.concatenate([extrinsic, np.array([[0, 0, 0, 1]])], axis=0)
+    
     assert (
         intrinsic.ndim == 2 and intrinsic.shape[0] == 3 and intrinsic.shape[1] == 3
     ), f"intrinsic should be of shape [3, 3], but got {intrinsic.shape}"
 
-    # inverse the extrinsic
     pose = np.linalg.inv(extrinsic) if not is_c2w else extrinsic
 
-    # the canonical camera
-    camera_faces = np.array(
-        [
-            # frustum
-            [0, 1, 2],
-            [0, 2, 4],
-            [0, 4, 3],
-            [0, 3, 1],
-            # up
-            [5, 7, 6],  # NOTE: reorder for normal shading
-            # right
-            [8, 10, 9],  # NOTE: reorder for normal shading
-        ]
-    ).astype(np.int32)
+    camera_faces = np.array([
+        [0, 1, 2], [0, 2, 4], [0, 4, 3], [0, 3, 1],
+        [5, 7, 6], [8, 10, 9]
+    ]).astype(np.int32)
     camera_colors = np.ones_like(camera_faces).astype(np.float32)
-    # shading camera
     camera_colors[:-2, :] = np.asarray(camera_color, dtype=np.float32)
-    # shading up and right indication faces
     camera_colors[-2] = np.asarray(up_color, dtype=np.float32)
     camera_colors[-1] = np.asarray(right_color, dtype=np.float32)
 
-    """get the vertices of cameras mesh"""
     H, W = HW if HW is not None else (intrinsic[1, 2] * 2, intrinsic[0, 2] * 2)
-    # use to div the cx/cy by fx/fy and get the frustum vertices
     focal_div = np.linalg.inv(intrinsic[:2, :2])
-    # fmt: off
-    tl = (focal_div @ - intrinsic[:2, 2:3]).reshape(-1) # top left
-    tr = (focal_div @ (np.array([[W,], [0,]]) - intrinsic[:2, 2:3])).reshape(-1) # top right
-    bl = (focal_div @ (np.array([[0,], [H,]]) - intrinsic[:2, 2:3])).reshape(-1) # bottom left
-    br = (focal_div @ (np.array([[W,], [H,]]) - intrinsic[:2, 2:3])).reshape(-1) # bottom right
+    
+    tl = (focal_div @ -intrinsic[:2, 2:3]).reshape(-1)
+    tr = (focal_div @ (np.array([[W], [0]]) - intrinsic[:2, 2:3])).reshape(-1)
+    bl = (focal_div @ (np.array([[0], [H]]) - intrinsic[:2, 2:3])).reshape(-1)
+    br = (focal_div @ (np.array([[W], [H]]) - intrinsic[:2, 2:3])).reshape(-1)
 
     camera_vertices = np.array([
-        [0.0,      0.0,  0.0],
-        [tl[0],  tl[1],  1.0],  # tl
-        [tr[0],  tr[1],  1.0],  # tr
-        [bl[0],  bl[1],  1.0],  # bl
-        [br[0],  br[1],  1.0],  # br
-
-        # up
-        [tl[0] * 0.8, tl[1] * 1.1, 1.0],
-        [tr[0] * 0.8, tr[1] * 1.1, 1.0],
-        [0.0,         tl[1] * 1.5, 1.0],
-
-        # right
-        [tr[0] * 1.05, tr[1] * 0.4, 1.0],
-        [br[0] * 1.05, br[1] * 0.4, 1.0],
-        [tr[0] * 1.2,  0.0,         1.0]
+        [0.0, 0.0, 0.0], [tl[0], tl[1], 1.0], [tr[0], tr[1], 1.0],
+        [bl[0], bl[1], 1.0], [br[0], br[1], 1.0],
+        [tl[0] * 0.8, tl[1] * 1.1, 1.0], [tr[0] * 0.8, tr[1] * 1.1, 1.0],
+        [0.0, tl[1] * 1.5, 1.0], [tr[0] * 1.05, tr[1] * 0.4, 1.0],
+        [br[0] * 1.05, br[1] * 0.4, 1.0], [tr[0] * 1.2, 0.0, 1.0]
     ], dtype=np.float32) * camera_size
-    # fmt: on
 
-    """tranform the camera vertices and get the final camera mesh"""
     camera_vertices = np.pad(camera_vertices, ((0, 0), (0, 1)), "constant", constant_values=(1, 1))
     camera_vertices = camera_vertices @ pose.T
     camera_vertices = camera_vertices[:, :3] / camera_vertices[:, 3:]
 
-    mesh = trimesh.Trimesh(vertices=camera_vertices, faces=camera_faces, face_colors=camera_colors)
-
-    return mesh
+    return trimesh.Trimesh(vertices=camera_vertices, faces=camera_faces, face_colors=camera_colors)
 
 
 def save_camera_mesh(
