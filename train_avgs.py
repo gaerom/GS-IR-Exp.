@@ -1,3 +1,10 @@
+######################################################################################################################
+
+# To-do
+# depth regularization 추가 
+# acoustic field 추가
+
+######################################################################################################################
 import os
 import sys
 import uuid
@@ -92,10 +99,11 @@ def training(
     normal_tv_weight: float = 1.0,
     bound: float = 1.5,
     indirect: bool = False,
+    scene_num: int = False,
 ) -> None:
     first_iter = 0
     gaussians = GaussianModel(dataset.sh_degree)
-    scene = Scene(dataset, gaussians)
+    scene = Scene(dataset, gaussians, scene_num)
     gaussians.training_setup(opt)
     tb_writer = prepare_output_and_logger(dataset)
 
@@ -180,7 +188,7 @@ def training(
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-        alpha_mask = viewpoint_cam.gt_alpha_mask.cuda()
+        alpha_mask = viewpoint_cam.gt_alpha_mask.cuda() # alpha mask? 
         gt_image = (gt_image * alpha_mask + background[:, None, None] * (1.0 - alpha_mask)).clamp(0.0, 1.0)
         loss: torch.Tensor
         Ll1 = F.l1_loss(image, gt_image)
@@ -549,6 +557,7 @@ if __name__ == "__main__":
     parser.add_argument("--gamma", action="store_true", help="Enable linear_to_sRGB for gamma correction.")
     parser.add_argument("--metallic", action="store_true", help="Enable metallic material reconstruction.")
     parser.add_argument("--indirect", action="store_true", help="Enable indirect diffuse modeling.")
+    parser.add_argument("--scene_num",type=str,default=None)
     args = parser.parse_args(sys.argv[1:])
     args.test_iterations.append(args.iterations)
     args.save_iterations.append(args.iterations)
@@ -579,6 +588,7 @@ if __name__ == "__main__":
         # env_tv_weight=args.env_tv,
         bound=args.bound,
         indirect=args.indirect,
+        scene_num=args.scene_num
     )
 
     # All done
