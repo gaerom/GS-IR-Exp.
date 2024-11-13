@@ -55,8 +55,10 @@ class ModelParams(ParamGroup):
         self._source_path = ""
         self._model_path = ""
         self._images = "images"
+        self._depths = "" # add
         self._resolution = -1
         self._white_background = False
+        self.train_test_exp = False
         self.data_device = "cuda"
         self.eval = False
         super().__init__(parser, "Loading Parameters", sentinel)
@@ -87,6 +89,10 @@ class OptimizationParams(ParamGroup):
         self.opacity_lr = 0.05
         self.scaling_lr = 0.005
         self.rotation_lr = 0.001
+        self.exposure_lr_init = 0.01 #
+        self.exposure_lr_final = 0.001 #  
+        self.exposure_lr_delay_steps = 0 # 
+        self.exposure_lr_delay_mult = 0.0 # 
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
         self.densification_interval = 100

@@ -113,12 +113,13 @@ def readColmapCameras(
         depth_params = depths_params.get(extr.name[:-n_remove]) if depths_params else None
 
         image_path = os.path.join(images_folder, extr.name)
-        depth_path = os.path.join(depths_folder, f"{extr.name[:-n_remove]}.png") if depths_folder else ""
+        image = Image.open(image_path) # add
+        depth_path = os.path.join(depths_folder, 'images', f"{extr.name[:-n_remove]}.png") if depths_folder else ""
 
         cam_info = CameraInfo(
             uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, depth_params=depth_params,
-            image_path=image_path, image_name=extr.name, depth_path=depth_path,
-            width=width, height=height, is_test=extr.name in test_cam_names_list
+            image=image, image_path=image_path, image_name=extr.name, 
+            depth_path=depth_path, width=width, height=height, is_test=extr.name in test_cam_names_list
         )
         cam_infos.append(cam_info)
     sys.stdout.write("\n")
@@ -150,7 +151,7 @@ def storePly(path: str, xyz: np.ndarray, rgb: np.ndarray) -> None:
 
 
 def readColmapSceneInfo(
-    path: str, images: str, depths: str, eval: bool, train_test_exp: bool, llffhold: int = 8
+    path: str, images: str, depths: str, eval: bool, train_test_exp: bool, llffhold: int = 8 # eval, train_test_exp
 ) -> SceneInfo:
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
@@ -269,3 +270,5 @@ sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
     "Blender": readNerfSyntheticInfo,
 }
+
+
