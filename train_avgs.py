@@ -15,7 +15,6 @@ from tqdm import tqdm, trange
 
 from arguments import GroupParams, ModelParams, OptimizationParams, PipelineParams
 from gaussian_renderer import render
-from gs_ir import recon_occlusion, IrradianceVolumes
 from pbr import CubemapLight, get_brdf_lut, pbr_shading
 from scene import GaussianModel, Scene, Camera
 from utils.general_utils import safe_state
@@ -63,35 +62,6 @@ def get_tv_loss(
             tv_loss += (tv_h * rgb_grad_h).mean() + (tv_w * rgb_grad_w).mean()
 
     return tv_loss
-
-
-def get_masked_tv_loss(
-    mask: torch.Tensor,  # [1, H, W]
-    gt_image: torch.Tensor,  # [3, H, W]
-    prediction: torch.Tensor,  # [C, H, W]
-    erosion: bool = False,
-) -> torch.Tensor:
-    rgb_grad_h = torch.exp(
-        -(gt_image[:, 1:, :] - gt_image[:, :-1, :]).abs().mean(dim=0, keepdim=True)
-    )  # [1, H-1, W]
-    rgb_grad_w = torch.exp(
-        -(gt_image[:, :, 1:] - gt_image[:, :, :-1]).abs().mean(dim=0, keepdim=True)
-    )  # [1, H-1, W]
-    tv_h = torch.pow(prediction[:, 1:, :] - prediction[:, :-1, :], 2)  # [C, H-1, W]
-    tv_w = torch.pow(prediction[:, :, 1:] - prediction[:, :, :-1], 2)  # [C, H, W-1]
-
-    # erode mask
-    mask = mask.float()
-    if erosion:
-        kernel = mask.new_ones([7, 7])
-        mask = kornia.morphology.erosion(mask[None, ...], kernel)[0]
-    mask_h = mask[:, 1:, :] * mask[:, :-1, :]  # [1, H-1, W]
-    mask_w = mask[:, :, 1:] * mask[:, :, :-1]  # [1, H, W-1]
-
-    tv_loss = (tv_h * rgb_grad_h * mask_h).mean() + (tv_w * rgb_grad_w * mask_w).mean()
-
-    return tv_loss
-
 
 
 def resize_tensorboard_img(
