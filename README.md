@@ -31,9 +31,15 @@ pip install ./diff-gaussian-rasterization # or cd ./diff-gaussian-rasterization 
 
 
 
+## Run
+- For training (normal recon: 30000 iter, acoustic: 40000 iter)
+```sh
+bash test.sh
+```
 
-## Running
- - Refer to [this site](https://caramel-process-7ad.notion.site/Code-a6edb3c9d3a94863b3808f023ac7d396?pvs=4) for some issues.
+
+## Issues
+ - Refer to ~~[this site](https://caramel-process-7ad.notion.site/Code-a6edb3c9d3a94863b3808f023ac7d396?pvs=4)~~ for some issues.
 
 
 
