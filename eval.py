@@ -14,10 +14,11 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
-    env_dict = {"office": list(range(1, 6)),
-               "house": list(range(6, 9)),
-               "apartment": list(range(9, 12)),
-               "outdoor": list(range(12, 14))}
+    env_dict = {"office": list(range(2, 3)),
+            #    "house": list(range(6, 9)),
+            #    "apartment": list(range(9, 12)),
+            #    "outdoor": list(range(12, 14))
+            }
 
 
     print("===================================")

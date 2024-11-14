@@ -31,6 +31,7 @@ def render(
     inference: bool = False,
     pad_normal: bool = False,
     derive_normal: bool = False,
+    use_trained_exp: bool = False
 ) -> Dict:
     """
     Render the scene.
@@ -165,6 +166,10 @@ def render(
         normal_map,
     )
     ### 이후 normal map(gaussian에 저장된거) <-> normal_map_from_depth랑 비교해서 update?  => penalty term  
+    
+    if use_trained_exp:
+        exposure = pc.get_exposure_from_name(viewpoint_camera.image_name)
+        rendered_image = torch.matmul(rendered_image.permute(1, 2, 0), exposure[:3, :3]).permute(2, 0, 1) + exposure[:3, 3,   None, None]
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.

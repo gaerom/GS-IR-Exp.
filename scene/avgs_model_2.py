@@ -386,7 +386,7 @@ class AVGS(GaussianModel,nn.Module):
     #     inliers = neighbor_count >= nb_points
     #     return xyz[inliers], inliers.nonzero(as_tuple=True)[0]
         
-    def remove_radius_outliers_batched(self, xyz, nb_points=8, radius=0.1, batch_size=128): # 512
+    def remove_radius_outliers_batched(self, xyz, nb_points=8, radius=0.1, batch_size=4): # 512
         num_points = xyz.shape[0]
         inliers = torch.zeros(num_points, dtype=torch.bool, device=xyz.device)
         

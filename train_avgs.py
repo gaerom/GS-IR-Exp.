@@ -1,8 +1,9 @@
 ######################################################################################################################
 
-# To-do
-# depth regularization 추가 
-# acoustic field 추가
+# depth regularization 추가 ✅
+# acoustic field 추가 ✅
+
+# vanilla 3dGS -> 7K, PSNR 확인
 
 ######################################################################################################################
 import os
@@ -13,20 +14,27 @@ from random import randint
 from typing import Dict, List, Optional, Tuple, Union
 
 import kornia
-import numpy as np
+import numpy as np  
 import nvdiffrast.torch as dr
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as T
 from tqdm import tqdm, trange
+import pickle
+import librosa
+import soundfile as sf
 
 from arguments import GroupParams, ModelParams, OptimizationParams, PipelineParams
+from utils.general_utils import safe_state, get_expon_lr_func
 from gaussian_renderer import render
 from pbr import CubemapLight, get_brdf_lut, pbr_shading
 from scene import GaussianModel, Scene, Camera
 from utils.general_utils import safe_state
 from utils.image_utils import psnr, turbo_cmap
 from utils.loss_utils import l1_loss, ssim
+
+from AV_utils import Evaluator
+from scene.avgs_model_2 import AVGS
 
 
 try:
@@ -113,7 +121,7 @@ def training(
     iter_start = torch.cuda.Event(enable_timing=True)
     iter_end = torch.cuda.Event(enable_timing=True)
 
-
+    depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
     canonical_rays = scene.get_canonical_rays()
 
     # load checkpoint
@@ -128,6 +136,8 @@ def training(
     # define progress bar
     viewpoint_stack = None
     ema_loss_for_log = 0.0
+    ema_Ll1depth_for_log = 0.0
+    
     progress_bar = trange(first_iter, opt.iterations, desc="Training progress")  # For logging
 
     for iteration in range(first_iter + 1, opt.iterations + 1):  # the real iteration (1 shift)
@@ -151,6 +161,9 @@ def training(
             pipe.debug = True
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
+        
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp)
+        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         if iteration <= pbr_iteration:
             background = bg
@@ -163,6 +176,7 @@ def training(
             bg_color=background,
             derive_normal=True,
         )
+        # rendering_result에 뭐가 저장되는지?
         image = rendering_result["render"]  # [3, H, W]
         viewspace_point_tensor = rendering_result["viewspace_points"]
         visibility_filter = rendering_result["visibility_filter"]
@@ -186,10 +200,10 @@ def training(
             .reshape(H, W, 3)
         )  # [H, W, 3]
 
-        # Loss
+        # Loss (updated)
         gt_image = viewpoint_cam.original_image.cuda()
-        alpha_mask = viewpoint_cam.gt_alpha_mask.cuda() # alpha mask? 
-        gt_image = (gt_image * alpha_mask + background[:, None, None] * (1.0 - alpha_mask)).clamp(0.0, 1.0)
+        alpha_mask = viewpoint_cam.gt_alpha_mask.cuda() # alpha mask -> 유효한 normal 영역만 계산 위해?
+        gt_image = (gt_image * alpha_mask + background[:, None, None] * (1.0 - alpha_mask)).clamp(0.0, 1.0) # ?
         loss: torch.Tensor
         Ll1 = F.l1_loss(image, gt_image)
         normal_loss = 0.0
@@ -202,6 +216,21 @@ def training(
             loss += normal_loss_weight * normal_loss
             normal_tv_loss = get_tv_loss(gt_image, normal_map, pad=1, step=1)
             loss += normal_tv_loss * normal_tv_weight
+            
+        # Depth regularization
+        Ll1depth_pure = 0.0
+        if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
+            # invDepth = render_pkg["depth"]
+            invDepth = render_pkg["depth_map"]
+            mono_invdepth = viewpoint_cam.invdepthmap.cuda()
+            depth_mask = viewpoint_cam.depth_mask.cuda()
+
+            Ll1depth_pure = torch.abs((invDepth  - mono_invdepth) * depth_mask).mean()
+            Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure 
+            loss += Ll1depth
+            Ll1depth = Ll1depth.item()
+        else:
+            Ll1depth = 0
 
 
         loss.backward()
@@ -211,6 +240,8 @@ def training(
         with torch.no_grad():
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
+            ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
+            
             if iteration % 10 == 0:
                 progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}"})
                 progress_bar.update(10)
@@ -285,6 +316,154 @@ def training(
                     },
                     scene.model_path + "/chkpnt" + str(iteration) + ".pth",
                 )
+                
+    avgs = AVGS(xyz=gaussians.get_xyz,acoustic=torch.cat([gaussians.get_features.flatten(start_dim=1),gaussians.get_rotation.flatten(start_dim=1)],dim=-1))
+    avgs.training_setup()
+    avgs.train()
+    # optimizer = torch.optim.Adam(avgs.parameters(), lr=5e-4, weight_decay=1e-4)
+
+    # viewpoint_stack = scene.getTrainCameras().copy()
+    # viewpoint_indices = list(range(len(viewpoint_stack)))
+
+    viewpoint_stack = scene.getTrainAudio().copy()
+    viewpoint_indices = list(range(len(viewpoint_stack)))
+
+    progress_bar = tqdm(range(0, 40000), desc="Training progress")
+
+    loss_list = []
+    # for iteration in range(opt.iterations + 1, opt.iterations + 37001):
+    for iteration in range(1, 40001):
+        # Pick a random Camera
+        if not viewpoint_stack:
+            result = eval(avgs,scene.getTestAudio().copy())
+            loss_list.append(result)
+            # viewpoint_stack = scene.getTrainCameras().copy()
+            viewpoint_stack = scene.getTrainAudio().copy()
+            viewpoint_indices = list(range(len(viewpoint_stack)))
+        rand_idx = randint(0, len(viewpoint_indices) - 1)
+        viewpoint_cam = viewpoint_stack.pop(rand_idx)
+        vind = viewpoint_indices.pop(rand_idx)
+        
+        # position xyz -> viewpoint_cam.camera_center
+        # direction xyz -> viewpoint_cam.camera_direction
+        # xyz = viewpoint_cam.camera_center
+        # ori = viewpoint_cam.camera_direction
+        
+        ret = avgs.binauralizer(viewpoint_cam)
+        # import pdb;pdb.set_trace()
+        # volume
+        loss_vol = torch.sum(torch.prod(avgs._acoustic,dim =1))
+
+        # mag
+        mag_bi_mean = viewpoint_cam["mag_bi"].mean(0)
+        loss_mono = F.mse_loss(ret["reconstr_mono"][0], mag_bi_mean)
+        loss_left = F.mse_loss(ret["reconstr"][0,0], viewpoint_cam["mag_bi"][0])
+        loss_right = F.mse_loss(ret["reconstr"][0,1], viewpoint_cam["mag_bi"][1])
+        loss_mag = loss_mono + loss_left + loss_right
+        
+        loss = loss_mag + loss_vol
+
+        # avgs.optimizer.step()
+        # avgs.optimizer.zero_grad()
+        loss.backward()
+
+        with torch.no_grad():
+            # avgs._xyz.grad[ret["idx"]]
+            # avgs._acoustic.grad[ret["idx"]]
+            # gradient = torch.cat([avgs._xyz.grad[ret["idx"]],avgs._acoustic.grad[ret["idx"]]],dim=1).mean(1)
+
+
+            if iteration % 10 == 0:
+                progress_bar.set_postfix({"Loss": f"{loss:.{4}f}"})
+                progress_bar.update(10)
+            if iteration == 40000:
+                result = eval(avgs,scene.getTestAudio().copy())
+                loss_list.append(result)
+                progress_bar.close()
+
+            # densification
+            # if iteration < opt.densify_until_iter:
+            if iteration < 40001:
+                # Keep track of max radii in image-space for pruning
+                # gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+                avgs.acoustic_add_densification_stats(ret["idx"])
+
+                if iteration % 100 == 0:
+                    # import pdb;pdb.set_trace()
+                    avgs.acoustic_densify()
+                    # size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                    # gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                
+                # if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+                #     gaussians.reset_opacity()
+
+                # if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+                #     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                #     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                
+                # if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+                #     gaussians.reset_opacity()
+            
+                if iteration % 3000 == 0:
+                    avgs.point_management()
+
+            # if iteration < 40001:
+                # gaussians.exposure_optimizer.step()
+                # gaussians.exposure_optimizer.zero_grad(set_to_none = True)
+                avgs.optimizer.step()
+                avgs.optimizer.zero_grad()
+    pickle.dump(loss_list,open(os.path.join(scene.model_path,"eval_loss.pkl"),'wb'))
+    
+    
+def eval(avgs, audio,save=False):
+    avgs.eval()
+    avgs.train_phase(False)
+    evaluator = Evaluator()
+    save_list = []
+
+    audio_idx = list(range(len(audio)))
+    # import pdb;pdb.set_trace()
+
+    with torch.no_grad():
+        for i in range(len(audio_idx)):
+            ret = avgs.binauralizer(audio[i])
+
+            mag_prd = ret["reconstr"].cpu().numpy()
+            # phase_prd = audio[i]["phase_sc"].cpu().numpy()
+            phase_prd = audio[i]["phase_sc"]
+            spec_prd = mag_prd * np.exp(1j * phase_prd[np.newaxis,:])
+            wav_prd = librosa.istft(spec_prd.squeeze().transpose(0, 2, 1), length=22050)
+            mag_gt = audio[i]["mag_bi"].cpu().numpy()
+            wav_gt = audio[i]["wav_bi"]
+            loss_list = evaluator.update(mag_prd, mag_gt, wav_prd, wav_gt)
+            if save:
+                save_list.append({"wav_prd": wav_prd,
+                                    "wav_gt": wav_gt,
+                                    "loss": loss_list,
+                                    "img_idx": audio[i]["img_idx"]})
+                
+                    # (mag_prd * np.exp(1j * audio[i]["phase_sc"][np.newaxis,:]))
+                
+            # for b in range(audio[i]["mag_bi"].shape[0]):
+            #     mag_prd = ret["reconstr"][b].cpu().numpy()
+            #     phase_prd = audio[i]["phase_sc"][b].cpu().numpy()
+            #     spec_prd = mag_prd * np.exp(1j * phase_prd[np.newaxis,:])
+            #     wav_prd = librosa.istft(spec_prd.transpose(0, 2, 1), length=22050)
+            #     mag_gt = audio[i]["mag_bi"][b].cpu().numpy()
+            #     wav_gt = audio[i]["wav_bi"][b].cpu().numpy()
+            #     loss_list = evaluator.update(mag_prd, mag_gt, wav_prd, wav_gt)
+            #     if save:
+            #         save_list.append({"wav_prd": wav_prd,
+            #                             "wav_gt": wav_gt,
+            #                             "loss": loss_list,
+            #                             "img_idx": audio[i]["img_idx"][b].cpu().numpy()})
+    # import pdb;pdb.set_trace()
+    result = evaluator.report()
+    # print(result)
+    avgs.train()
+    avgs.train_phase(True)
+    return result
+
 
 
 def prepare_output_and_logger(args: GroupParams) -> Optional[SummaryWriter]:
@@ -558,10 +737,12 @@ if __name__ == "__main__":
     parser.add_argument("--metallic", action="store_true", help="Enable metallic material reconstruction.")
     parser.add_argument("--indirect", action="store_true", help="Enable indirect diffuse modeling.")
     parser.add_argument("--scene_num",type=str,default=None)
+    
     args = parser.parse_args(sys.argv[1:])
     args.test_iterations.append(args.iterations)
     args.save_iterations.append(args.iterations)
     args.checkpoint_iterations.append(args.iterations)
+    
 
     print("Optimizing " + args.model_path)
 

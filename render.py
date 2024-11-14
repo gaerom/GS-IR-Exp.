@@ -230,22 +230,23 @@ def launch(
     gamma: bool = False,
     indirect: bool = False,
     brdf_eval: bool = False,
+    scene_num: int = False,
 ) -> None:
     gaussians = GaussianModel(dataset.sh_degree)
-    scene = Scene(dataset, gaussians, shuffle=False)
-    cubemap = CubemapLight(base_res=256).cuda()
+    scene = Scene(dataset, gaussians, scene_num, shuffle=False)
+    # cubemap = CubemapLight(base_res=256).cuda()
 
     # occlusion volumes
-    filepath = os.path.join(os.path.dirname(checkpoint_path), "occlusion_volumes.pth")
-    print(f"begin to load occlusion volumes from {filepath}")
-    if os.path.exists(filepath):
-        occlusion_volumes = torch.load(filepath)
-        bound = occlusion_volumes["bound"]
-    else:
-        occlusion_volumes = None
-        bound = 0.5
-    aabb = torch.tensor([-bound, -bound, -bound, bound, bound, bound]).cuda()
-    irradiance_volumes = IrradianceVolumes(aabb=aabb).cuda()
+    # filepath = os.path.join(os.path.dirname(checkpoint_path), "occlusion_volumes.pth")
+    # print(f"begin to load occlusion volumes from {filepath}")
+    # if os.path.exists(filepath):
+    #     occlusion_volumes = torch.load(filepath)
+    #     bound = occlusion_volumes["bound"]
+    # else:
+    #     occlusion_volumes = None
+    #     bound = 0.5
+    # aabb = torch.tensor([-bound, -bound, -bound, bound, bound, bound]).cuda()
+    # irradiance_volumes = IrradianceVolumes(aabb=aabb).cuda()
 
     checkpoint = torch.load(checkpoint_path)
     model_params = checkpoint["gaussians"]
@@ -253,10 +254,10 @@ def launch(
     irradiance_volumes_params = checkpoint["irradiance_volumes"]
 
     gaussians.restore(model_params)
-    cubemap.load_state_dict(cubemap_params)
-    cubemap.eval()
-    irradiance_volumes.load_state_dict(irradiance_volumes_params)
-    irradiance_volumes.eval()
+    # cubemap.load_state_dict(cubemap_params)
+    # cubemap.eval()
+    # irradiance_volumes.load_state_dict(irradiance_volumes_params)
+    # irradiance_volumes.eval()
 
     if brdf_eval:
         if not skip_train:
@@ -279,9 +280,9 @@ def launch(
                 model_path=model_path,
                 name="train",
                 scene=scene,
-                light=cubemap,
-                irradiance_volumes=irradiance_volumes,
-                occlusion_volumes=occlusion_volumes,
+                # light=cubemap,
+                # irradiance_volumes=irradiance_volumes,
+                # occlusion_volumes=occlusion_volumes,
                 pipeline=pipeline,
                 pbr=pbr,
                 metallic=metallic,
@@ -294,9 +295,9 @@ def launch(
                 model_path=model_path,
                 name="test",
                 scene=scene,
-                light=cubemap,
-                irradiance_volumes=irradiance_volumes,
-                occlusion_volumes=occlusion_volumes,
+                # light=cubemap,
+                # irradiance_volumes=irradiance_volumes,
+                # occlusion_volumes=occlusion_volumes,
                 pipeline=pipeline,
                 pbr=pbr,
                 metallic=metallic,
