@@ -1,5 +1,5 @@
 # Stage 1 - initial stage (add normal)
-i=1
+i=4
 # for i in {4..5}
 # do
 #     python train_avgs.py -s ./release/$i -m ./output_test/rwavs/$i --iterations 30000 --eval --scene_num $i
